@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>KRASNODAR RP: HARDCORE</title>
+    <style>
+        :root { --main: #007bff; --panel: #1e1e1e; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Arial', sans-serif; color: white; user-select: none; }
+        canvas { display: block; }
+
+        /* Интерфейсы */
+        .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.8); z-index: 100; }
+        .window { background: var(--panel); padding: 30px; border-radius: 20px; border: 2px solid var(--main); text-align: center; width: 350px; pointer-events: auto; }
+        
+        button { width: 100%; padding: 12px; margin-top: 10px; background: var(--main); border: none; color: #fff; font-weight: bold; border-radius: 8px; cursor: pointer; }
+        input { width: 90%; padding: 12px; margin: 10px 0; background: #000; border: 1px solid #444; color: #fff; border-radius: 8px; }
+
+        /* HUD */
+        #hud { position: absolute; top: 20px; right: 20px; text-align: right; pointer-events: none; }
+        .money-text { font-size: 28px; color: #00ff00; font-weight: bold; }
+        .hp-bar-bg { width: 200px; height: 15px; background: #440000; border: 1px solid #000; }
+        #hp-fill { width: 100%; height: 100%; background: #ff3333; transition: 0.2s; }
+
+        /* Чат */
+        #chat-box { position: absolute; top: 20px; left: 20px; width: 400px; height: 180px; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column-reverse; pointer-events: none; font-size: 14px; border: 1px solid rgba(255,255,255,0.1); }
+        #chat-input { position: absolute; top: 210px; left: 20px; width: 380px; display: none; background: #111; color: #fff; border: 2px solid var(--main); padding: 10px; pointer-events: auto; }
+
+        /* Телефон */
+        #phone { position: absolute; right: 40px; bottom: -500px; width: 200px; height: 350px; background: #111; border: 4px solid #333; border-radius: 25px; transition: 0.4s; padding: 15px; z-index: 90; display: flex; flex-direction: column; }
+        #phone.active { bottom: 30px; }
+
+        #hint { position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%); color: yellow; font-weight: bold; display: none; }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="overlay" id="screen-auth">
+        <div class="window">
+            <h1>KRASNODAR RP</h1>
+            <input type="text" id="reg-nick" placeholder="Ваш ник">
+            <button onclick="toServers()">ВОЙТИ</button>
+        </div>
+    </div>
+
+    <div class="overlay" id="screen-factions" style="display:none;">
+        <div class="window">
+            <h2>ВЫБЕРИТЕ СТОРОНУ</h2>
+            <button style="background: #e74c3c;" onclick="startGame('ОПГ')">ОПГ (Криминал)</button>
+            <button style="background: #3498db;" onclick="startGame('МВД')">МВД (Закон)</button>
+        </div>
+    </div>
+
+    <div class="overlay" id="screen-shop" style="display:none;">
+        <div class="window">
+            <h2>ОРУЖЕЙНАЯ</h2>
+            <p>Баланс: <span id="shop-money">0</span>₽</p>
+            <button onclick="buyItem('Нож', 100)">Купить Нож (100₽)</button>
+            <button onclick="buyItem('Бронежилет', 500)">Бронежилет (500₽)</button>
+            <button style="background:#555;" onclick="closeShop()">ВЫХОД</button>
+        </div>
+    </div>
+
+    <div id="game-ui" style="display:none;">
+        <div id="chat-box"></div>
+        <input type="text" id="chat-input" placeholder="Напишите сообщение...">
+        
+        <div id="hud">
+            <div id="ui-nick">Player</div>
+            <div class="money-text"><span id="ui-money">0</span> ₽</div>
+            <div class="hp-bar-bg"><div id="hp-fill"></div></div>
+        </div>
+
+        <div id="phone">
+            <h4 style="text-align:center;margin:5px;">SAMSUNG</h4>
+            <button onclick="alert('Ваша фракция: '+p.team)">Инфо</button>
+            <button onclick="location.reload()" style="background:#c0392b;">Выйти</button>
+            <button style="margin-top:auto; background:#444;" onclick="togglePhone()">ЗАКРЫТЬ</button>
+        </div>
+        <div id="hint">Нажмите [E] чтобы зайти</div>
+    </div>
+</div>
+
+<canvas id="game"></canvas>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getDatabase, ref, set, onValue, onDisconnect, update as dbUpdate } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyApfEncKdafvvXaUmtTclPiDJPyrcuD7SQ",
+        authDomain: "greenpay-34957.firebaseapp.com",
+        projectId: "greenpay-34957",
+        databaseURL: "https://greenpay-34957-default-rtdb.firebaseio.com/",
+        storageBucket: "greenpay-34957.firebasestorage.app",
+        messagingSenderId: "990792295519",
+        appId: "1:990792295519:web:5ba691f1f8eb896db8a7ea"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // Состояние игрока
+    window.p = { 
+        x: 500, y: 500, nick: '', team: '', hp: 100, money: 0, 
+        color: '', active: false, chat: false, phone: false 
+    };
+    let players = {};
+
+    const WORLD = {
+        w: 3000, h: 2000,
+        opg_base: {x: 100, y: 100, w: 300, h: 200, color: '#4d1a1a', name: 'БАЗА ОПГ'},
+        mvd_base: {x: 2500, y: 100, w: 400, h: 300, color: '#1a1a4d', name: 'УВД'},
+        shop: {x: 1400, y: 1400, w: 200, h: 150, color: '#4d4d1a', name: 'МАГАЗИН'}
+    };
+
+    // Глобальные функции для HTML
+    window.toServers = () => {
+        p.nick = document.getElementById('reg-nick').value;
+        if(!p.nick) return alert("Ник!");
+        document.getElementById('screen-auth').style.display = 'none';
+        document.getElementById('screen-factions').style.display = 'flex';
+        
+        // Слушаем данные игроков
+        onValue(ref(db, 'players'), (s) => { 
+            players = s.val() || {};
+            // Если нас убили другие игроки (проверка HP из базы)
+            if(players[p.nick] && players[p.nick].hp <= 0 && p.hp > 0) {
+                die();
+            }
+        });
+        
+        // Слушаем чат
+        onValue(ref(db, 'chat'), (s) => {
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML = '';
+            const msgs = s.val() || {};
+            Object.values(msgs).slice(-8).forEach(m => {
+                const div = document.createElement('div');
+                div.innerHTML = `<b style="color:${m.c}">${m.n}:</b> ${m.t}`;
+                chatBox.prepend(div);
+            });
+        });
+    };
+
+    window.startGame = (team) => {
+        p.team = team;
+        p.color = team === 'ОПГ' ? '#ff4d4d' : '#3498db';
+        p.x = team === 'ОПГ' ? 250 : 2700;
+        p.active = true;
+        document.getElementById('screen-factions').style.display = 'none';
+        document.getElementById('game-ui').style.display = 'block';
+        document.getElementById('ui-nick').innerText = p.nick;
+        onDisconnect(ref(db, 'players/' + p.nick)).remove();
+        loop();
+    };
+
+    window.togglePhone = () => {
+        p.phone = !p.phone;
+        document.getElementById('phone').classList.toggle('active', p.phone);
+    };
+
+    window.closeShop = () => { document.getElementById('screen-shop').style.display = 'none'; };
+    window.buyItem = (item, price) => {
+        if(p.money >= price) {
+            p.money -= price;
+            addChatMsg("Система", `Куплено: ${item}`, "#ffff00");
+        } else alert("Мало денег!");
+    };
+
+    // Логика чата
+    function addChatMsg(n, t, c) {
+        const msgRef = ref(db, 'chat/' + Date.now());
+        set(msgRef, { n, t, c });
+    }
+
+    // Система ударов
+    window.onmousedown = () => {
+        if(!p.active || p.chat || p.phone) return;
+        // Эффект удара (визуально)
+        console.log("Удар!");
+        
+        // Проверка дистанции до других игроков
+        for(let id in players) {
+            if(id === p.nick) continue;
+            let target = players[id];
+            let dist = Math.hypot(p.x - target.x, p.y - target.y);
+            
+            if(dist < 60) { // Те самые "10 см" (60 пикселей)
+                let newHp = (target.hp || 100) - 10;
+                dbUpdate(ref(db, 'players/' + id), { hp: newHp });
+                addChatMsg("Бой", `${p.nick} ударил ${id}`, "#ff0000");
+            }
+        }
+    };
+
+    function die() {
+        p.hp = 100;
+        p.x = p.team === 'ОПГ' ? 250 : 2700;
+        p.y = 500;
+        addChatMsg("МОРГ", `${p.nick} погиб и респавнился`, "#fff");
+    }
+
+    const keys = {};
+    window.onkeydown = (e) => {
+        keys[e.code] = true;
+        if(e.code === 'KeyT' && !p.chat) {
+            p.chat = true;
+            const input = document.getElementById('chat-input');
+            input.style.display = 'block'; setTimeout(()=>input.focus(), 10);
+        }
+        if(e.code === 'Enter' && p.chat) {
+            const input = document.getElementById('chat-input');
+            if(input.value) addChatMsg(p.nick, input.value, p.color);
+            input.value = ''; input.style.display = 'none'; p.chat = false;
+        }
+        if(e.code === 'KeyE') {
+            if(Math.hypot(p.x - (WORLD.shop.x + 100), p.y - (WORLD.shop.y + 75)) < 150) {
+                document.getElementById('screen-shop').style.display = 'flex';
+                document.getElementById('shop-money').innerText = p.money;
+            }
+        }
+        if(e.code === 'Tab') { e.preventDefault(); togglePhone(); }
+    };
+    window.onkeyup = (e) => keys[e.code] = false;
+
+    function update() {
+        if(!p.active || p.chat) return;
+        if(keys['KeyW']) p.y -= 6; if(keys['KeyS']) p.y += 6;
+        if(keys['KeyA']) p.x -= 6; if(keys['KeyD']) p.x += 6;
+
+        p.x = Math.max(0, Math.min(WORLD.w, p.x));
+        p.y = Math.max(0, Math.min(WORLD.h, p.y));
+
+        document.getElementById('ui-money').innerText = p.money;
+        document.getElementById('hp-fill').style.width = p.hp + '%';
+        
+        // Подсказка магазина
+        let nearShop = Math.hypot(p.x - (WORLD.shop.x + 100), p.y - (WORLD.shop.y + 75)) < 150;
+        document.getElementById('hint').style.display = nearShop ? 'block' : 'none';
+
+        // Синхра с базой
+        set(ref(db, 'players/' + p.nick), {
+            x: p.x, y: p.y, color: p.color, hp: p.hp, team: p.team
+        });
+    }
+
+    function draw() {
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+        
+        const camX = canvas.width/2 - p.x;
+        const camY = canvas.height/2 - p.y;
+        
+        ctx.save();
+        ctx.translate(camX, camY);
+
+        // Трава
+        ctx.fillStyle = '#1e3d1e'; ctx.fillRect(0,0, WORLD.w, WORLD.h);
+
+        // Отрисовка зданий
+        [WORLD.opg_base, WORLD.mvd_base, WORLD.shop].forEach(b => {
+            ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, b.w, b.h);
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.strokeRect(b.x, b.y, b.w, b.h);
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 20px Arial';
+            ctx.fillText(b.name, b.x + 20, b.y + 40);
+        });
+
+        // Другие игроки
+        for(let id in players) {
+            if(id === p.nick) continue;
+            let pl = players[id];
+            ctx.fillStyle = pl.color;
+            ctx.fillRect(pl.x - 25, pl.y - 25, 50, 50);
+            ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+            ctx.fillText(id + ` (${pl.hp}%)`, pl.x, pl.y - 35);
+        }
+
+        ctx.restore();
+
+        // Свой персонаж (центр)
+        ctx.fillStyle = p.color;
+        ctx.fillRect(canvas.width/2 - 25, canvas.height/2 - 25, 50, 50);
+        ctx.strokeStyle = 'white'; ctx.strokeRect(canvas.width/2 - 25, canvas.height/2 - 25, 50, 50);
+    }
+
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+</script>
+</body>
+</html>

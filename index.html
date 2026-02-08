@@ -30,6 +30,9 @@
         #phone.active { bottom: 30px; }
 
         #hint { position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%); color: yellow; font-weight: bold; display: none; }
+        
+        /* Индикатор микрофона */
+        #mic-status { position: absolute; bottom: 20px; left: 20px; color: #00ff00; font-weight: bold; display: none; text-shadow: 1px 1px #000; }
     </style>
 </head>
 <body>
@@ -78,6 +81,7 @@
             <button style="margin-top:auto; background:#444;" onclick="togglePhone()">ЗАКРЫТЬ</button>
         </div>
         <div id="hint">Нажмите [E] чтобы зайти</div>
+        <div id="mic-status">🎤 МИКРОФОН ВКЛЮЧЕН (X)</div>
     </div>
 </div>
 
@@ -103,9 +107,11 @@
     // Состояние игрока
     window.p = { 
         x: 500, y: 500, nick: '', team: '', hp: 100, money: 0, 
-        color: '', active: false, chat: false, phone: false 
+        color: '', active: false, chat: false, phone: false,
+        talking: false // Новое поле для микрофона
     };
     let players = {};
+    let localStream = null;
 
     const WORLD = {
         w: 3000, h: 2000,
@@ -114,23 +120,29 @@
         shop: {x: 1400, y: 1400, w: 200, h: 150, color: '#4d4d1a', name: 'МАГАЗИН'}
     };
 
+    // --- Система микрофона ---
+    async function initMicrophone() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            localStream.getAudioTracks()[0].enabled = false; 
+        } catch (e) { console.error("Микрофон не доступен"); }
+    }
+
     // Глобальные функции для HTML
     window.toServers = () => {
         p.nick = document.getElementById('reg-nick').value;
         if(!p.nick) return alert("Ник!");
+        initMicrophone(); // Запрос микрофона при входе
         document.getElementById('screen-auth').style.display = 'none';
         document.getElementById('screen-factions').style.display = 'flex';
         
-        // Слушаем данные игроков
         onValue(ref(db, 'players'), (s) => { 
             players = s.val() || {};
-            // Если нас убили другие игроки (проверка HP из базы)
             if(players[p.nick] && players[p.nick].hp <= 0 && p.hp > 0) {
                 die();
             }
         });
         
-        // Слушаем чат
         onValue(ref(db, 'chat'), (s) => {
             const chatBox = document.getElementById('chat-box');
             chatBox.innerHTML = '';
@@ -168,25 +180,18 @@
         } else alert("Мало денег!");
     };
 
-    // Логика чата
     function addChatMsg(n, t, c) {
         const msgRef = ref(db, 'chat/' + Date.now());
         set(msgRef, { n, t, c });
     }
 
-    // Система ударов
     window.onmousedown = () => {
         if(!p.active || p.chat || p.phone) return;
-        // Эффект удара (визуально)
-        console.log("Удар!");
-        
-        // Проверка дистанции до других игроков
         for(let id in players) {
             if(id === p.nick) continue;
             let target = players[id];
             let dist = Math.hypot(p.x - target.x, p.y - target.y);
-            
-            if(dist < 60) { // Те самые "10 см" (60 пикселей)
+            if(dist < 60) {
                 let newHp = (target.hp || 100) - 10;
                 dbUpdate(ref(db, 'players/' + id), { hp: newHp });
                 addChatMsg("Бой", `${p.nick} ударил ${id}`, "#ff0000");
@@ -204,6 +209,12 @@
     const keys = {};
     window.onkeydown = (e) => {
         keys[e.code] = true;
+        // Кнопка X для микрофона
+        if(e.code === 'KeyX' && localStream && !p.chat) {
+            p.talking = true;
+            localStream.getAudioTracks()[0].enabled = true;
+            document.getElementById('mic-status').style.display = 'block';
+        }
         if(e.code === 'KeyT' && !p.chat) {
             p.chat = true;
             const input = document.getElementById('chat-input');
@@ -222,7 +233,15 @@
         }
         if(e.code === 'Tab') { e.preventDefault(); togglePhone(); }
     };
-    window.onkeyup = (e) => keys[e.code] = false;
+
+    window.onkeyup = (e) => {
+        keys[e.code] = false;
+        if(e.code === 'KeyX' && localStream) {
+            p.talking = false;
+            localStream.getAudioTracks()[0].enabled = false;
+            document.getElementById('mic-status').style.display = 'none';
+        }
+    };
 
     function update() {
         if(!p.active || p.chat) return;
@@ -235,13 +254,11 @@
         document.getElementById('ui-money').innerText = p.money;
         document.getElementById('hp-fill').style.width = p.hp + '%';
         
-        // Подсказка магазина
         let nearShop = Math.hypot(p.x - (WORLD.shop.x + 100), p.y - (WORLD.shop.y + 75)) < 150;
         document.getElementById('hint').style.display = nearShop ? 'block' : 'none';
 
-        // Синхра с базой
         set(ref(db, 'players/' + p.nick), {
-            x: p.x, y: p.y, color: p.color, hp: p.hp, team: p.team
+            x: p.x, y: p.y, color: p.color, hp: p.hp, team: p.team, talking: p.talking
         });
     }
 
@@ -256,10 +273,8 @@
         ctx.save();
         ctx.translate(camX, camY);
 
-        // Трава
         ctx.fillStyle = '#1e3d1e'; ctx.fillRect(0,0, WORLD.w, WORLD.h);
 
-        // Отрисовка зданий
         [WORLD.opg_base, WORLD.mvd_base, WORLD.shop].forEach(b => {
             ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, b.w, b.h);
             ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.strokeRect(b.x, b.y, b.w, b.h);
@@ -267,22 +282,35 @@
             ctx.fillText(b.name, b.x + 20, b.y + 40);
         });
 
-        // Другие игроки
         for(let id in players) {
             if(id === p.nick) continue;
             let pl = players[id];
             ctx.fillStyle = pl.color;
             ctx.fillRect(pl.x - 25, pl.y - 25, 50, 50);
+            
+            // Если игрок говорит и он в радиусе 550 пикселей (55 см)
+            let dist = Math.hypot(p.x - pl.x, p.y - pl.y);
+            if(pl.talking && dist < 550) {
+                ctx.strokeStyle = '#00ff00';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(pl.x - 30, pl.y - 30, 60, 60);
+            }
+
             ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
             ctx.fillText(id + ` (${pl.hp}%)`, pl.x, pl.y - 35);
         }
 
         ctx.restore();
 
-        // Свой персонаж (центр)
         ctx.fillStyle = p.color;
         ctx.fillRect(canvas.width/2 - 25, canvas.height/2 - 25, 50, 50);
         ctx.strokeStyle = 'white'; ctx.strokeRect(canvas.width/2 - 25, canvas.height/2 - 25, 50, 50);
+        
+        // Индикатор "Говорю" над своей головой
+        if(p.talking) {
+            ctx.fillStyle = '#00ff00';
+            ctx.fillText("🎤", canvas.width/2, canvas.height/2 - 40);
+        }
     }
 
     function loop() { update(); draw(); requestAnimationFrame(loop); }
